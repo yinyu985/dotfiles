@@ -1,0 +1,20 @@
+# 生成/缓存文件, 不纳入版本控制
+.DS_Store
+.history
+.vscode/
+
+*.log
+*~
+*.swp
+
+# shell 生成物
+.zsh_plugins.zsh
+.zcompdump*
+*.zwc
+.zsh_history
+.bash_history
+.viminfo
+
+# hammerspoon 敏感/产物 (双保险, 子目录 .gitignore 也有)
+.hammerspoon/ocr/remote/secrets.lua
+.hammerspoon/ocr/apple/visionocr

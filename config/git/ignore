@@ -1,0 +1,8 @@
+# IDE/local history
+.history/
+
+# IDE folders
+.vscode/
+
+# Timestamped local snapshot patches
+*.patch
