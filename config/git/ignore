@@ -6,3 +6,6 @@
 
 # Timestamped local snapshot patches
 *.patch
+# Qoder local files (private, not committed)
+AGENTS.local.md
+*.local.md

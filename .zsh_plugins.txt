@@ -1,5 +1,5 @@
 # 核心插件 - 按加载顺序排列
-romkatv/powerlevel10k
+romkatv/powerlevel10k path:powerlevel10k.zsh-theme
 
 # 语法高亮 - 必须在 autosuggestions 之前
 zsh-users/zsh-syntax-highlighting
@@ -12,3 +12,7 @@ zsh-users/zsh-history-substring-search
 
 # 额外的 zsh 补全
 zsh-users/zsh-completions
+
+# kubectl插件
+zimfw/k kind:autoload path:functions
+zimfw/k path:init.zsh

@@ -11,11 +11,6 @@ if [[ -r "${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh" ]]
 fi
 
 # ---------------------------------------------------------------------------
-# Powerlevel10k 配置
-# ---------------------------------------------------------------------------
-[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
-
-# ---------------------------------------------------------------------------
 # 基础环境变量
 # ---------------------------------------------------------------------------
 export LANG="en_US.UTF-8"
@@ -23,10 +18,14 @@ export LC_ALL="en_US.UTF-8"
 export LESSHISTFILE=/dev/null
 export HOMEBREW_NO_AUTO_UPDATE=true
 
-# Homebrew
-if [[ -x /opt/homebrew/bin/brew ]]; then
-  eval "$(/opt/homebrew/bin/brew shellenv)"
-fi
+# Homebrew (内联，避免每次启动调用 brew shellenv 子进程)
+export HOMEBREW_PREFIX="/opt/homebrew"
+export HOMEBREW_CELLAR="/opt/homebrew/Cellar"
+export HOMEBREW_REPOSITORY="/opt/homebrew"
+export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+fpath[1,0]="/opt/homebrew/share/zsh/site-functions"
+[ -z "${MANPATH-}" ] || export MANPATH=":${MANPATH#:}"
+export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
 
 # ---------------------------------------------------------------------------
 # Zsh Completion
@@ -51,6 +50,11 @@ if (( $+functions[antidote] )) && [[ -f ~/.zsh_plugins.txt ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Powerlevel10k 配置 (在 antidote 加载之后)
+# ---------------------------------------------------------------------------
+[[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
+
+# ---------------------------------------------------------------------------
 # Zsh 历史配置
 # ---------------------------------------------------------------------------
 HISTFILE=~/.zsh_history
@@ -64,11 +68,15 @@ setopt HIST_REDUCE_BLANKS
 setopt SHARE_HISTORY
 setopt INC_APPEND_HISTORY
 setopt EXTENDED_HISTORY
+setopt AUTO_CD
+setopt CORRECT
+setopt NO_BEEP
 
 # ---------------------------------------------------------------------------
 # Zsh 行为配置
 # ---------------------------------------------------------------------------
-WORDCHARS=${WORDCHARS//\//}
+WORDCHARS=${WORDCHARS//\//}    # 从 WORDCHARS 中移除 /，使 Ctrl+W 删除单词时在 / 处停止
+export PROMPT_EOL_MARK=""       # 关闭 zsh 的自动 % 分割
 
 bindkey -e
 
@@ -103,13 +111,18 @@ export FZF_DEFAULT_OPTS="--height 40% --layout=reverse --border"
 # ---------------------------------------------------------------------------
 # 别名
 # ---------------------------------------------------------------------------
+alias rm='rm -i'
 alias cp='cp -i'
+alias mv='mv -i'
 alias la='ls -alh'
+alias l='ls -alh'
+alias ll='ls -lh'
 alias lh='ls -lh'
 alias grep='grep --color=auto'
 alias cl='clear && clear && clear'
 alias vi='vim'
 alias d='diff -u --color=auto'
+alias python='python3'
 
 # Git 别名
 alias ga='git add'
@@ -128,32 +141,45 @@ alias gsd='git show -p'
 alias gcb='git checkout -b'
 alias glo='git log --oneline --decorate --graph | head -50'
 alias gls='git log --stat | head -50'
-alias python=python3
-p() {
-  command pi "$@"
-}
 
-pi() {
-  command pi -p "$@"
-}
+# 浏览器别名
+alias ge='open -na "Google Chrome" --args --ignore-certificate-errors --ignore-urlfetcher-cert-requests --remote-debugging-port=9222'
+alias he='open -na "Helium" --args --ignore-certificate-errors --ignore-urlfetcher-cert-requests --remote-debugging-port=9222'
+alias fedora='/Applications/OrbStack.app/Contents/MacOS/bin/orb -m fedora'
 
-pc() {
-  command pi -p -c "$@"
-}
 # ---------------------------------------------------------------------------
 # 函数
 # ---------------------------------------------------------------------------
 
+# Chrome-Agent 启动器（独立 profile + 9222 端口）
+gac() {
+  open -na "Google Chrome" --args \
+    --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Agent" \
+    --profile-directory="Default" \
+    --remote-debugging-port=9222 \
+    --remote-debugging-address=127.0.0.1 \
+    --ignore-certificate-errors \
+    --ignore-urlfetcher-cert-requests \
+    --no-first-run \
+    --no-default-browser-check
+}
+
+# pi 启动器
+p() { command pi "$@" }
+pi() { command pi -p "$@" }
+pc() { command pi -p -c "$@" }
+
 # 历史查看
 alias h='fc -l -t "%Y-%m-%d %H:%M:%S" -d'
-function hg() {
+hg() {
   fc -l -t "%Y-%m-%d %H:%M:%S" -d 0 \
     | grep -- "$@" \
     | sed 's/^[[:space:]]*[0-9]\+[[:space:]]*//' \
-    | sed 's/\\n//g'
+    | sed 's/\\n//g'  # 过滤掉回车转义符
 }
 
-function j() {
+# Base64 解码
+j() {
   if [ -z "$1" ]; then
     echo "Usage: j <base64_string>"
     return 1
@@ -161,7 +187,8 @@ function j() {
   echo "$1" | base64 --decode
 }
 
-function gc() {
+# Git commit（无参数则交互输入）
+gc() {
   if [ -z "$1" ]; then
     read -r "commit_msg?Please enter a commit message: "
     git commit -m "$commit_msg"
@@ -170,7 +197,7 @@ function gc() {
   fi
 }
 
-# fzf 文件查找
+# fzf 文件查找（支持多关键词）
 ff() {
   local dir="."
   if [ $# -gt 0 ] && [ -d "$1" ]; then
@@ -184,9 +211,37 @@ ff() {
   find "$dir" -type f 2>/dev/null | fzf --exact "${fargs[@]}"
 }
 
+# 把文件/文件夹加入 git 全局忽略 (~/.gitignore)
+ig() {
+  local ignores="$HOME/.gitignore"
+  [ -f "$ignores" ] || touch "$ignores"
+  if [ $# -eq 0 ]; then
+    echo "Usage: ig <file_or_folder> ..." >&2
+    return 1
+  fi
+  for item in "$@"; do
+    local name="${item:t}"  # zsh 取 basename
+    if grep -qxF "$name" "$ignores"; then
+      echo "already ignored: $name"
+    else
+      echo "$name" >> "$ignores"
+      echo "ignored: $name"
+    fi
+  done
+}
+
+# Agent 配置保护（锁/解锁）
+gai() { command "$HOME/.local/bin/agent-config-protection" unlock }
+suo() { command "$HOME/.local/bin/agent-config-protection" lock }
+
 # ---------------------------------------------------------------------------
 # 开发环境
 # ---------------------------------------------------------------------------
+
+# Go
+export GOPROXY=https://proxy.golang.org,direct
+export GOPATH=$HOME/go
+export PATH="$GOPATH/bin:$PATH"
 
 # Python
 export PATH="$HOME/Library/Python/3.9/bin:$PATH"
@@ -196,104 +251,41 @@ if [[ -d /Applications/Tailscale.app/Contents/MacOS ]]; then
   export PATH="/Applications/Tailscale.app/Contents/MacOS:$PATH"
 fi
 
-# AI API 环境配置
-export PROMPT_EOL_MARK="" # 关闭zsh的自动%分割
-
-
 # 其他 PATH
 export PATH="$HOME/.local/bin:$PATH"
+
+# ggcm (python 脚本)
+alias ggcm='python3 /usr/local/bin/ggcm'
 
 # ---------------------------------------------------------------------------
 # VS Code Shell 集成
 # ---------------------------------------------------------------------------
-[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"
-[[ "$TERM_PROGRAM" == "kiro" ]] && command -v kiro >/dev/null 2>&1 && . "$(kiro --locate-shell-integration-path zsh)"
+# VS Code shell integration 已禁用 — 它会拖慢 p10k 异步 VCS 重绘约 800ms+
+# if [[ "$TERM_PROGRAM" == "vscode" ]]; then
+#   . "/Applications/Visual Studio Code.app/.../shellIntegration-rc.zsh"
+# fi
 
-
-
-
-alias ggcm='python3 /usr/local/bin/ggcm'
-
-
-# ---- pi-web toggle: start in background / stop ----
+# ---------------------------------------------------------------------------
+# pi-web toggle: start in background / stop
+# ---------------------------------------------------------------------------
 piweb() {
-  local pidfile="$HOME/.pi-web.pid"
-  local logfile="$HOME/.pi-web.log"
-  local pid="" i
-
-  # 解析目标端口: -p/--port 参数 > $PORT > 默认 30141
-  local port="${PORT:-30141}"
-  local -a args; args=("$@")
-  for (( i=1; i<=$#args; i++ )); do
-    case "${args[$i]}" in
-      -p|--port)  port="${args[$i+1]}" ;;
-      -p?*|--port=*) port="${${args[$i]}#*=}" ;;
-    esac
-  done
-
-  # ---- 已在运行? (pidfile → pgrep) ----
-  if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
-    pid=$(cat "$pidfile")
-  else
-    pid=$(pgrep -f 'bin/pi-web(\.js)?$' | head -1)
-  fi
-
+  local pid=$(pgrep -f 'pi-web' | head -1)
   if [[ -n "$pid" ]]; then
     echo "Stopping pi-web (pid $pid)..."
-    kill "$pid" 2>/dev/null            # 父进程会负责收掉子进程
-    for i in {1..6}; do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.5
-    done
-    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
-    rm -f "$pidfile"
-    echo "pi-web stopped."
+    kill "$pid" 2>/dev/null
+    echo "stopped."
     return
   fi
-
-  # ---- 没有 pi-web 进程，但端口被占? (多半是残留的 next-server) ----
-  local holder="$(lsof -ti TCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)"
-  if [[ -n "$holder" ]]; then
-    local hcmd="$(ps -p "$holder" -o comm= 2>/dev/null)"
-    if [[ "$hcmd" == *next* || "$hcmd" == *node* ]]; then
-      echo "清理残留进程 $holder ($hcmd)..."
-      kill "$holder" 2>/dev/null
-      for i in {1..6}; do kill -0 "$holder" 2>/dev/null || break; sleep 0.5; done
-      kill -0 "$holder" 2>/dev/null && kill -9 "$holder" 2>/dev/null
-    else
-      echo "端口 $port 已被占用: pid $holder ($hcmd)"
-      echo "请改用其他端口, 如: piweb -p 9000"
-      return 1
-    fi
-  fi
-
-  # ---- 启动 ----
-  : > "$logfile"                        # 清空日志，避免读到上次的端口
-  nohup pi-web "$@" >> "$logfile" 2>&1 &
-  pid=$!
-  echo "$pid" > "$pidfile"
-
-  # 等 "Local: http://..." 出现，最多 ~15 秒
-  local url=""
-  for i in {1..30}; do
-    kill -0 "$pid" 2>/dev/null || break
-    url=$(grep -oE 'http://[^ ]+' "$logfile" | head -1)
-    [[ -n "$url" ]] && break
-    sleep 0.5
-  done
-
-  if [[ -n "$url" ]]; then
-    echo "pi-web started (pid $pid)"
-    echo "  → $url"
-  elif kill -0 "$pid" 2>/dev/null; then
-    echo "pi-web (pid $pid) 还在启动中, 日志: $logfile"
+  echo "Starting pi-web..."
+  nohup pi-web "$@" > ~/.pi-web.log 2>&1 &
+  sleep 2
+  if pgrep -f 'pi-web' >/dev/null; then
+    echo "started (pid $!)"
   else
-    rm -f "$pidfile"
-    echo "pi-web 启动失败, 日志末尾:"
-    tail -5 "$logfile" | sed 's/^/  | /'
-    return 1
+    echo "failed. log: ~/.pi-web.log"
   fi
 }
-# 用法: piweb           启动(后台); 再敲一次则关闭
-#       piweb -p 9000   指定端口
-# 完整日志: tail -f ~/.pi-web.log
+# >>> ai-coding-trace qoder-token-usage >>>
+export QODER_EXPOSE_TOKEN_USAGE=1
+export QODERCN_EXPOSE_TOKEN_USAGE=1
+# <<< ai-coding-trace qoder-token-usage <<<
