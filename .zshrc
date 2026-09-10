@@ -269,6 +269,9 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 # pi-web toggle: start in background / stop
 # ---------------------------------------------------------------------------
 piweb() {
+  local dir="$HOME/.pi/web"
+  local log="$dir/pi-web.log"
+  mkdir -p "$dir"
   local pid=$(pgrep -f 'pi-web' | head -1)
   if [[ -n "$pid" ]]; then
     echo "Stopping pi-web (pid $pid)..."
@@ -277,12 +280,12 @@ piweb() {
     return
   fi
   echo "Starting pi-web..."
-  nohup pi-web "$@" > ~/.pi-web.log 2>&1 &
+  nohup pi-web "$@" > "$log" 2>&1 &
   sleep 2
   if pgrep -f 'pi-web' >/dev/null; then
     echo "started (pid $!)"
   else
-    echo "failed. log: ~/.pi-web.log"
+    echo "failed. log: $log"
   fi
 }
 # >>> ai-coding-trace qoder-token-usage >>>
