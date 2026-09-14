@@ -266,27 +266,77 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 # fi
 
 # ---------------------------------------------------------------------------
-# pi-web toggle: start in background / stop
+# pi-web 管理：日志/PID 一律放 ~/.pi（logs/ + run/），不再往家目录拉屎
+# 用法:
+#   piweb            确保在跑（幂等，没跑就启动，跑着就报状态）
+#   piweb start      启动（可跟参数，如: piweb start -p 8080）
+#   piweb stop       停止
+#   piweb restart    重启
+#   piweb status     查看状态
+# 环境变量: PI_WEB_PORT 可换端口; PI_WEB_IDLE_TIMEOUT_MS 可覆盖闲置退出设置
 # ---------------------------------------------------------------------------
 piweb() {
-  local dir="$HOME/.pi/web"
-  local log="$dir/pi-web.log"
-  mkdir -p "$dir"
-  local pid=$(pgrep -f 'pi-web' | head -1)
-  if [[ -n "$pid" ]]; then
-    echo "Stopping pi-web (pid $pid)..."
-    kill "$pid" 2>/dev/null
-    echo "stopped."
-    return
-  fi
-  echo "Starting pi-web..."
-  nohup pi-web "$@" > "$log" 2>&1 &
-  sleep 2
-  if pgrep -f 'pi-web' >/dev/null; then
-    echo "started (pid $!)"
-  else
-    echo "failed. log: $log"
-  fi
+  local port="${PI_WEB_PORT:-30141}"
+  local log_file="$HOME/.pi/logs/pi-web.log"
+  local pid_file="$HOME/.pi/run/pi-web.pid"
+
+  # 用端口占用判断存活（lsof），比 pgrep -f 靠谱——老写法会匹配到无关进程/自己
+  local -a rest=("${@:2}")
+  local pid=""
+  pid=$(lsof -ti tcp:"$port" 2>/dev/null | head -1)
+
+  case "${1:-start}" in
+    status)
+      if [[ -n "$pid" ]]; then
+        echo "pi-web 运行中 (pid $pid, http://127.0.0.1:$port)"
+      else
+        echo "pi-web 未运行"
+      fi
+      ;;
+    stop)
+      if [[ -n "$pid" ]]; then
+        echo "Stopping pi-web (pid $pid)..."
+        kill "$pid" 2>/dev/null
+        for _ in {1..10}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.3; done
+        kill -9 "$pid" 2>/dev/null
+        rm -f "$pid_file"
+        echo "stopped."
+      else
+        echo "pi-web 本来就没在跑。"
+        rm -f "$pid_file"
+      fi
+      ;;
+    restart)
+      piweb stop && piweb start "${rest[@]}"
+      ;;
+    start|*)
+      if [[ -n "$pid" ]]; then
+        echo "pi-web 已经在运行 (pid $pid, http://127.0.0.1:$port)。"
+        return 0
+      fi
+      mkdir -p "$HOME/.pi/logs" "$HOME/.pi/run"
+      echo "Starting pi-web..."
+      # 新版默认会话闲置 10 分钟后自动退出，取消之；你自己 export 了就用你的值
+      local idle_opt="PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}"
+      # 子 shell + nohup 双重脱离：关终端窗口也不带跑
+      (
+        nohup env "$idle_opt" pi-web --no-open "${rest[@]}" >"$log_file" 2>&1 &
+        echo $! > "$pid_file" 2>/dev/null
+      )
+      # 等端口就绪，最多 20 秒
+      for _ in {1..40}; do
+        if lsof -ti tcp:"$port" >/dev/null 2>&1; then
+          echo "$(lsof -ti tcp:"$port" | head -1)" > "$pid_file"
+          echo "started — http://127.0.0.1:$port  (日志: $log_file, pid: $(cat "$pid_file"))"
+          return 0
+        fi
+        sleep 0.5
+      done
+      echo "failed. 日志：$log_file"
+      tail -20 "$log_file"
+      return 1
+      ;;
+  esac
 }
 # >>> ai-coding-trace qoder-token-usage >>>
 export QODER_EXPOSE_TOKEN_USAGE=1
