@@ -123,6 +123,7 @@ alias cl='clear && clear && clear'
 alias vi='vim'
 alias d='diff -u --color=auto'
 alias python='python3'
+alias p='pi'
 
 # Git 别名
 alias ga='git add'
@@ -163,11 +164,6 @@ gac() {
     --no-first-run \
     --no-default-browser-check
 }
-
-# pi 启动器
-p() { command pi "$@" }
-pi() { command pi -p "$@" }
-pc() { command pi -p -c "$@" }
 
 # 历史查看
 alias h='fc -l -t "%Y-%m-%d %H:%M:%S" -d'
