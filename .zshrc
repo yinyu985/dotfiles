@@ -27,6 +27,9 @@ fpath[1,0]="/opt/homebrew/share/zsh/site-functions"
 [ -z "${MANPATH-}" ] || export MANPATH=":${MANPATH#:}"
 export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
 
+# TypeSafe 密钥不入库，实体在 ~/.config/typesafe/env (600)
+[[ -f "$HOME/.config/typesafe/env" ]] && source "$HOME/.config/typesafe/env"
+
 # ---------------------------------------------------------------------------
 # Zsh Completion
 # ---------------------------------------------------------------------------
@@ -262,78 +265,58 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 # fi
 
 # ---------------------------------------------------------------------------
-# pi-web 管理：日志/PID 一律放 ~/.pi（logs/ + run/），不再往家目录拉屎
-# 用法:
-#   piweb            确保在跑（幂等，没跑就启动，跑着就报状态）
-#   piweb start      启动（可跟参数，如: piweb start -p 8080）
-#   piweb stop       停止
-#   piweb restart    重启
-#   piweb status     查看状态
-# 环境变量: PI_WEB_PORT 可换端口; PI_WEB_IDLE_TIMEOUT_MS 可覆盖闲置退出设置
+# 本地 web 服务统一管理（piweb = pi-web，pui = pi-web-ui）
+#   <name>           确保在跑并给出地址（幂等，只输出 URL → open $(piweb)）
+#   <name> start     启动（可跟参数）
+#   <name> stop|restart|status|logs
+#   pui install      只有想开机自启才用：装 launchd 服务
+# 环境变量: PI_WEB_PORT(30141) / PI_UI_PORT(8787) / PI_UI_CWD($HOME)
 # ---------------------------------------------------------------------------
-piweb() {
-  local port="${PI_WEB_PORT:-30141}"
-  local log_file="$HOME/.pi/logs/pi-web.log"
-  local pid_file="$HOME/.pi/run/pi-web.pid"
+# 端口判活必须带 -sTCP:LISTEN，否则浏览器/客户端连上该端口的进程也会被匹配到
+_ws_pid() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null | head -1 }
 
-  # 用端口占用判断存活（lsof），比 pgrep -f 靠谱——老写法会匹配到无关进程/自己
-  local -a rest=("${@:2}")
-  local pid=""
-  pid=$(lsof -ti tcp:"$port" 2>/dev/null | head -1)
-
-  case "${1:-start}" in
-    status)
-      if [[ -n "$pid" ]]; then
-        echo "pi-web 运行中 (pid $pid, http://127.0.0.1:$port)"
-      else
-        echo "pi-web 未运行"
-      fi
-      ;;
-    stop)
-      if [[ -n "$pid" ]]; then
-        echo "Stopping pi-web (pid $pid)..."
-        kill "$pid" 2>/dev/null
-        for _ in {1..10}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.3; done
-        kill -9 "$pid" 2>/dev/null
-        rm -f "$pid_file"
-        echo "stopped."
-      else
-        echo "pi-web 本来就没在跑。"
-        rm -f "$pid_file"
-      fi
-      ;;
-    restart)
-      piweb stop && piweb start "${rest[@]}"
-      ;;
-    start|*)
-      if [[ -n "$pid" ]]; then
-        echo "pi-web 已经在运行 (pid $pid, http://127.0.0.1:$port)。"
-        return 0
-      fi
-      mkdir -p "$HOME/.pi/logs" "$HOME/.pi/run"
-      echo "Starting pi-web..."
-      # 新版默认会话闲置 10 分钟后自动退出，取消之；你自己 export 了就用你的值
-      local idle_opt="PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}"
-      # 子 shell + nohup 双重脱离：关终端窗口也不带跑
-      (
-        nohup env "$idle_opt" pi-web --no-open "${rest[@]}" >"$log_file" 2>&1 &
-        echo $! > "$pid_file" 2>/dev/null
-      )
-      # 等端口就绪，最多 20 秒
-      for _ in {1..40}; do
-        if lsof -ti tcp:"$port" >/dev/null 2>&1; then
-          echo "$(lsof -ti tcp:"$port" | head -1)" > "$pid_file"
-          echo "started — http://127.0.0.1:$port  (日志: $log_file, pid: $(cat "$pid_file"))"
-          return 0
-        fi
-        sleep 0.5
-      done
-      echo "failed. 日志：$log_file"
-      tail -20 "$log_file"
-      return 1
-      ;;
+# _wsvc <名字> <端口> <日志> <pid文件> [start|stop|restart|status|logs] <启动命令...>
+_wsvc() {
+  local n=$1 p=$2 l=$3 f=$4; shift 4
+  local pid=$(_ws_pid $p)
+  case ${1:-start} in
+    status)  if [[ -n $pid ]]; then echo "$n 运行中 (pid $pid, http://127.0.0.1:$p)"
+             else echo "$n 未运行"; fi ;;
+    logs)    tail -n 50 "$l" ;;
+    stop)    if [[ -n $pid ]]; then
+               echo "Stopping $n (pid $pid)..."; kill $pid 2>/dev/null
+               for _ in {1..10}; do kill -0 $pid 2>/dev/null || break; sleep 0.3; done
+               kill -9 $pid 2>/dev/null
+             else echo "$n 本来就没在跑。"; fi
+             rm -f "$f" ;;
+    restart) shift; _wsvc "$n" "$p" "$l" "$f" stop && _wsvc "$n" "$p" "$l" "$f" start "$@" ;;
+    *)       shift
+             if [[ -n $pid ]]; then echo "http://127.0.0.1:$p"; return 0; fi
+             mkdir -p "${l:h}" "${f:h}"
+             # 子 shell + nohup 双重脱离：关终端窗口也不带跑
+             ( nohup "$@" >"$l" 2>&1 & echo $! >"$f" )
+             local child=$(cat "$f" 2>/dev/null)
+             for _ in {1..40}; do
+               pid=$(_ws_pid $p)
+               if [[ -n $pid ]]; then echo "$pid" >"$f"; echo "http://127.0.0.1:$p"; return 0; fi
+               kill -0 "$child" 2>/dev/null || break   # 子进程自己退了就别干等 20 秒
+               sleep 0.5
+             done
+             echo "$n 启动失败，日志：$l" >&2; tail -20 "$l" >&2; return 1 ;;
   esac
 }
+
+# 日志/PID 一律放 ~/.pi（logs/ + run/），不往家目录拉屎
+piweb() { local p=${PI_WEB_PORT:-30141}
+  _wsvc pi-web "$p" ~/.pi/logs/pi-web.log ~/.pi/run/pi-web.pid "${1:-start}" \
+    env "PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}" pi-web --no-open "${@:2}" }
+
+pui() { local p=${PI_UI_PORT:-8787}
+  if [[ $1 == install ]]; then shift
+    pi-web-ui server install --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "$@"; return; fi
+  _wsvc pi-web-ui "$p" ~/.pi/logs/pi-web-ui.log ~/.pi/run/pi-web-ui.pid "${1:-start}" \
+    pi-web-ui --no-browser --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "${@:2}" }
+
 # >>> ai-coding-trace qoder-token-usage >>>
 export QODER_EXPOSE_TOKEN_USAGE=1
 export QODERCN_EXPOSE_TOKEN_USAGE=1
