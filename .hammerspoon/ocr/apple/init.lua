@@ -65,7 +65,9 @@ local successAlertStyle = {
 }
 
 local _successSound
-local _feedbackCanvases = {}
+-- 每个屏幕复用一个 canvas。hs.canvas:delete() 不释放窗口 backing store，
+-- 每次闪屏 canvas.new + delete 会按全屏尺寸泄漏一个 IOSurface（实测 7~20MB/次）。
+local _flashCanvases = {}
 local _feedbackTimers = {}
 
 local function playSuccessSound()
@@ -86,10 +88,16 @@ local function playSuccessSound()
     end
 end
 
-local function flashScreens()
-    local screens = screen.allScreens()
-    for _, scr in ipairs(screens) do
-        local frame = scr:fullFrame()
+local function flashCanvasFor(scr)
+    local key = scr:id() or scr:name() or "main"
+    local frame = scr:fullFrame()
+    local entry = _flashCanvases[key]
+    if entry and (entry.w ~= frame.w or entry.h ~= frame.h) then
+        pcall(function() entry.canvas:delete(0) end)
+        _flashCanvases[key] = nil
+        entry = nil
+    end
+    if not entry then
         local c = canvas.new(frame)
         c[1] = {
             type = "rectangle",
@@ -98,15 +106,21 @@ local function flashScreens()
             frame = { x = 0, y = 0, w = frame.w, h = frame.h },
         }
         c:level("screenSaver")
+        entry = { canvas = c, w = frame.w, h = frame.h }
+        _flashCanvases[key] = entry
+    end
+    return entry.canvas
+end
+
+local function flashScreens()
+    local screens = screen.allScreens()
+    for _, scr in ipairs(screens) do
+        local c = flashCanvasFor(scr)
         c:show(0)
-        table.insert(_feedbackCanvases, c)
 
         local t
         t = timer.doAfter(successFlashSeconds, function()
-            c:delete(0.10)
-            for i = #_feedbackCanvases, 1, -1 do
-                if _feedbackCanvases[i] == c then table.remove(_feedbackCanvases, i) end
-            end
+            pcall(function() c:hide(0.10) end)
             for i = #_feedbackTimers, 1, -1 do
                 if _feedbackTimers[i] == t then table.remove(_feedbackTimers, i) end
             end
@@ -334,8 +348,8 @@ function ocr.stop()
   if ocr.hotkey then ocr.hotkey:delete() end
   if ocr.menuBar then ocr.menuBar:delete(); ocr.menuBar = nil end
   for _, t in ipairs(_feedbackTimers) do t:stop() end
-  for _, c in ipairs(_feedbackCanvases) do c:delete() end
-  _feedbackTimers, _feedbackCanvases = {}, {}
+  for _, entry in pairs(_flashCanvases) do pcall(function() entry.canvas:delete(0) end) end
+  _feedbackTimers, _flashCanvases = {}, {}
   if _successSound then _successSound:stop() end
 end
 

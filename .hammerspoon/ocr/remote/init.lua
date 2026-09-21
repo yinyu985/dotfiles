@@ -22,7 +22,7 @@ local log = (function()
 end)()
 -- 持有正在跑的 task 引用，防止被 Lua GC 提前回收（GC 走了回调就再也不会触发）
 M._inflightTasks = {}
-M._feedbackCanvases = {}
+M._flashCanvases = {}
 M._feedbackTimers = {}
 M._successSound = nil
 M._activeKeyIndex = 1
@@ -146,26 +146,40 @@ local function playSuccessSound()
         M._successSound:play()
     end
 end
-local function flashScreens()
-    local screens = hs.screen.allScreens()
-    for _, screen in ipairs(screens) do
-        local frame = screen:fullFrame()
-        local canvas = hs.canvas.new(frame)
-        canvas[1] = {
+-- 每个屏幕复用一个 canvas。hs.canvas:delete() 不释放窗口 backing store，
+-- 每次闪屏 new + delete 会按全屏尺寸泄漏一个 IOSurface（实测 7~20MB/次）。
+local function flashCanvasFor(scr)
+    local key = scr:id() or scr:name() or "main"
+    local frame = scr:fullFrame()
+    local entry = M._flashCanvases[key]
+    if entry and (entry.w ~= frame.w or entry.h ~= frame.h) then
+        pcall(function() entry.canvas:delete(0) end)
+        M._flashCanvases[key] = nil
+        entry = nil
+    end
+    if not entry then
+        local c = hs.canvas.new(frame)
+        c[1] = {
             type = "rectangle",
             action = "fill",
             fillColor = { red = 0.15, green = 0.95, blue = 0.38, alpha = 0.18 },
             frame = { x = 0, y = 0, w = frame.w, h = frame.h },
         }
-        canvas:level("screenSaver")
-        canvas:show(0)
-        table.insert(M._feedbackCanvases, canvas)
+        c:level("screenSaver")
+        entry = { canvas = c, w = frame.w, h = frame.h }
+        M._flashCanvases[key] = entry
+    end
+    return entry.canvas
+end
+
+local function flashScreens()
+    local screens = hs.screen.allScreens()
+    for _, scr in ipairs(screens) do
+        local c = flashCanvasFor(scr)
+        c:show(0)
         local timer
         timer = hs.timer.doAfter(M.successFlashSeconds, function()
-            canvas:delete(0.10)
-            for i = #M._feedbackCanvases, 1, -1 do
-                if M._feedbackCanvases[i] == canvas then table.remove(M._feedbackCanvases, i) end
-            end
+            pcall(function() c:hide(0.10) end)
             for i = #M._feedbackTimers, 1, -1 do
                 if M._feedbackTimers[i] == timer then table.remove(M._feedbackTimers, i) end
             end

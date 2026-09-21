@@ -60,7 +60,7 @@ local CONFIG = {
     csv_max_bytes   = 20 * 1024 * 1024,
     csv_top_n       = 15,
     menu_top_n      = 10,
-    top_sample_interval = 20,
+    top_sample_interval = 60,
     lsappinfo_cache_seconds = 30,
 
     growth_detection = {
@@ -515,6 +515,8 @@ end
 
 local function extract_app_from_command(command)
     if not command or command == "" then return nil end
+    -- 便宜的预筛：绝大多数命令行里没有 .app，先 plain find 挡掉，避免在惰性捕获上回溯
+    if not command:find(".app", 1, true) then return nil end
     local app = command:match("^%s*(.-%.app)/Contents/")
     if not app then app = command:match("^%s*(.-%.app)$") end
     if not app then return nil end
@@ -523,6 +525,7 @@ end
 
 local function extract_inner_app_from_command(command)
     if not command or command == "" then return nil end
+    if not command:find(".app", 1, true) then return nil end
     local last = nil
     for name in command:gmatch("([^/]+)%.app") do last = name end
     return last
@@ -1017,32 +1020,33 @@ local function render_menu(snapshot)
     return menu
 end
 
-local function update_menu(snapshot)
-    if not menu_item then return end
+-- 不再每周期重建菜单：把渲染函数交给 menubar，Hammerspoon 只在用户点击时调用它。
+local function update_snapshot(snapshot)
     if snapshot then last_snapshot = snapshot end
-
-    menu_item:setTooltip("Process Monitor")
-    menu_item:setMenu(render_menu(last_snapshot))
 end
 
 local function create_menu_item()
-    if menu_item or not menubar then return end
-    menu_item = menubar.new(true, "procmon_menu_bar")
+    if not menubar then return end
     if not menu_item then
-        alert.show("procmon menu bar item failed", 3)
-        return
+        menu_item = menubar.new(true, "procmon_menu_bar")
+        if not menu_item then
+            alert.show("procmon menu bar item failed", 3)
+            return
+        end
+
+        -- Write embedded SVG to temp file and load as icon
+        local f = io.open(ICON_CACHE, "w")
+        if f then
+            f:write(ICON_SVG)
+            f:close()
+            local icon = hs.image.imageFromPath(ICON_CACHE)
+            if icon then menu_item:setIcon(icon, true) end
+        end
     end
 
-    -- Write embedded SVG to temp file and load as icon
-    local f = io.open(ICON_CACHE, "w")
-    if f then
-        f:write(ICON_SVG)
-        f:close()
-        local icon = hs.image.imageFromPath(ICON_CACHE)
-        if icon then menu_item:setIcon(icon, true) end
-    end
-
-    update_menu(nil)
+    menu_item:setTitle("")
+    menu_item:setTooltip("Process Monitor")
+    menu_item:setMenu(function() return render_menu(last_snapshot) end)
 end
 
 -- ---------- Core: process ps output ----------
@@ -1224,7 +1228,7 @@ local function process_data(ps_output, top_mem_by_pid, lsappinfo_map)
     if not write_text_file(CONFIG.status_file, status_text) then
         log("[err] failed to write status")
     end
-    update_menu({
+    update_snapshot({
         ts = ts,
         mode = mode,
         app_sorted = app_sorted,
