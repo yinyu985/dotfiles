@@ -27,9 +27,6 @@ fpath[1,0]="/opt/homebrew/share/zsh/site-functions"
 [ -z "${MANPATH-}" ] || export MANPATH=":${MANPATH#:}"
 export INFOPATH="/opt/homebrew/share/info:${INFOPATH:-}"
 
-# TypeSafe 密钥不入库，实体在 ~/.config/typesafe/env (600)
-[[ -f "$HOME/.config/typesafe/env" ]] && source "$HOME/.config/typesafe/env"
-
 # ---------------------------------------------------------------------------
 # Zsh Completion
 # ---------------------------------------------------------------------------
