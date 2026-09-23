@@ -1,11 +1,30 @@
-# IDE/local history
+# 全局忽略（core.excludesfile → ~/.config/git/ignore，软链接到本文件）
+#
+# 本文件的规则作用于所有仓库，只放有意全局忽略的类型。
+# 仓库特定文件请用 zsh 的 ig 函数写进该仓库自己的 .gitignore；
+# 它写入 /开头的仓库相对路径，只匹配对应位置。
+#
+# Git ignore 中的 / 指仓库根，不是文件系统根；写 /Users/... 无法
+# 指定电脑上某个仓库的绝对路径。
+
+# --- 有意跨仓库忽略的规则 ---
+
+# IDE / 编辑器
+.vscode/
+.idea/
 .history/
 
-# IDE folders
-.vscode/
-
-# Timestamped local snapshot patches
+# 本地快照补丁（时间戳命名，只会在本地生成）
 *.patch
-# Qoder local files (private, not committed)
+
+# Qoder 本地私有文件
 AGENTS.local.md
 *.local.md
+
+# Python 字节码：扩展名唯一，不可能误伤源码
+*.pyc
+__pycache__/
+
+# macOS
+.DS_Store
+._*

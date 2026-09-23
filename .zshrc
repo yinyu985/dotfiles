@@ -152,12 +152,13 @@ alias fedora='/Applications/OrbStack.app/Contents/MacOS/bin/orb -m fedora'
 # 函数
 # ---------------------------------------------------------------------------
 
-# Chrome-Agent 启动器（独立 profile + 9222 端口）
+# Chrome-Agent 启动器（独立 profile + 动态调试端口：显式端口不写 DevToolsActivePort，
+# 用 0 让 Chrome 自己挑，MCP 才能靠 --autoConnect 找到它，也永远不会跟 he/ge 撞车）
 gac() {
   open -na "Google Chrome" --args \
     --user-data-dir="$HOME/Library/Application Support/Google/Chrome-Agent" \
     --profile-directory="Default" \
-    --remote-debugging-port=9222 \
+    --remote-debugging-port=0 \
     --remote-debugging-address=127.0.0.1 \
     --ignore-certificate-errors \
     --ignore-urlfetcher-cert-requests \
@@ -193,37 +194,118 @@ gc() {
   fi
 }
 
-# fzf 文件查找（支持多关键词）
+# 模糊查找文件（路径子串匹配，实时遍历，适合记得“路径片段”的场景）
+# 用法: ff [目录] 关键词...   目录可省略，默认当前目录
+# 多个关键词对整条路径做大小写不敏感的子串匹配（全部命中才输出）；无关键词则列出全部
+# 依赖: fd（列文件，自动跳 .gitignore）+ rg（过滤）；默认跳过依赖/构建/系统缓存目录
 ff() {
-  local dir="."
+  local dir="$PWD"
   if [ $# -gt 0 ] && [ -d "$1" ]; then
-    dir="$1"
+    dir="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
     shift
   fi
-  local fargs=()
-  for q in "$@"; do
-    fargs+=(-f "$q")
+
+  local -a ex=(--exclude node_modules --exclude .git --exclude Library
+               --exclude .cache --exclude dist --exclude build
+               --exclude .venv --exclude __pycache__ --exclude target)
+
+  # 无关键词：只列文件，交给 fd 的忽略规则
+  if [ $# -eq 0 ]; then
+    fd -H -t f . "$dir" "${ex[@]}"
+    return
+  fi
+
+  # 多关键词：每个关键词转义后拼成 .*a.*b.*，rg 一次过滤（全部命中才输出）
+  local pat=""
+  for kw in "$@"; do
+    pat+="${kw//\//\\/}.*"
   done
-  find "$dir" -type f 2>/dev/null | fzf --exact "${fargs[@]}"
+  fd -H -t f . "$dir" "${ex[@]}" 2>/dev/null | rg -i -- "${pat%.*}"
 }
 
-# 把文件/文件夹加入 git 全局忽略 (~/.gitignore)
+# 快速查找：走 macOS Spotlight 索引，毫秒级，但只匹配“文件名”（不含路径）
+# 用法: fff [-d 天数] [目录] 关键词   例: fff helium / fff -d 30 helium / fff ~/Documents 告警
+# 需要索引已开启；查不到就先跑一次: sudo mdutil -i on /
+fff() {
+  local days="" within=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -d) days="$2"; shift 2 ;;
+      *) break ;;
+    esac
+  done
+
+  local dir=""
+  if [ $# -gt 1 ] && [ -d "$1" ]; then
+    dir="$1"; shift
+  fi
+
+  [ -n "$1" ] || { print -r -- "用法: fff [-d 天数] [目录] 关键词" >&2; return 1 }
+
+  [ -n "$days" ] && within=" && kMDItemFSContentChangeDate >= \$time.today(-${days})"
+  local q="kMDItemFSName == '*$1*'c${within}"
+
+  if [ -n "$dir" ]; then
+    mdfind -onlyin "$dir" "$q"
+  else
+    mdfind "$q"
+  fi
+}
+
+# 把文件/文件夹加入「当前仓库」的 .gitignore（从仓库根精确匹配）
+# 用法: ig path/to/file ...   必须在 git 仓库内
+#
+# 本函数只动当前仓库的 .gitignore，写入 /开头的仓库相对路径。
+# 全局忽略在 ~/.config/git/ignore（软链接到 dotfiles/config/git/ignore），
+# 其中的规则会作用于所有仓库，只应放确实需要全局忽略的类型。
 ig() {
-  local ignores="$HOME/.gitignore"
-  [ -f "$ignores" ] || touch "$ignores"
   if [ $# -eq 0 ]; then
-    echo "Usage: ig <file_or_folder> ..." >&2
+    print -r -- "用法: ig <文件/文件夹> ..." >&2
     return 1
   fi
+
+  # 定位当前仓库根（git rev-parse 从子目录也能找到）
+  local root
+  root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    print -r -- "ig: 不在 git 仓库内" >&2
+    return 1
+  }
+  root="$(cd "$root" && pwd -P)" || return 1
+  local ignores="$root/.gitignore"
+  local item abs rel pattern failed=0
+
   for item in "$@"; do
-    local name="${item:t}"  # zsh 取 basename
-    if grep -qxF "$name" "$ignores"; then
-      echo "already ignored: $name"
+    # 转成相对仓库根的路径
+    if [ -d "$item" ]; then
+      abs="$(cd "$item" 2>/dev/null && pwd -P)"
+    elif [ -e "$item" ] || [ -L "$item" ]; then
+      abs="$(cd "$(dirname "$item")" 2>/dev/null && pwd -P)/$(basename "$item")"
     else
-      echo "$name" >> "$ignores"
-      echo "ignored: $name"
+      print -r -- "ig: 不存在: $item" >&2
+      failed=1
+      continue
+    fi
+    case "$abs" in
+      "$root"/*) rel="${abs#$root/}" ;;
+      *) print -r -- "ig: 不属于当前仓库: $item" >&2; failed=1; continue ;;
+    esac
+    if [[ "$rel" == *$'\n'* ]]; then
+      print -r -- "ig: 文件名含换行，无法写入 .gitignore: $item" >&2
+      failed=1
+      continue
+    fi
+    # / 锚定仓库根；文件名中的 glob 字符按字面匹配。
+    pattern="/$(print -rn -- "$rel" | sed 's/[][?*\\]/\\&/g; s/ /\\ /g')"
+    [ -f "$ignores" ] || touch "$ignores"
+
+    if grep -qxF -- "$pattern" "$ignores"; then
+      print -r -- "already ignored: $rel"
+    else
+      print -r -- "$pattern" >> "$ignores"
+      print -r -- "ignored: $rel"
     fi
   done
+  return "$failed"
 }
 
 # Agent 配置保护（锁/解锁）
