@@ -344,7 +344,7 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 # fi
 
 # ---------------------------------------------------------------------------
-# 本地 web 服务统一管理（piweb = pi-web，pui = pi-web-ui）
+# 本地 web 服务统一管理（piweb = pi-web，pui = pi-web-ui，amgr = agent-manager）
 #   <name>           确保在跑并给出地址（幂等，只输出 URL → open $(piweb)）
 #   <name> start     启动（可跟参数）
 #   <name> stop|restart|status|logs
@@ -395,6 +395,18 @@ pui() { local p=${PI_UI_PORT:-8787}
     pi-web-ui server install --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "$@"; return; fi
   _wsvc pi-web-ui "$p" ~/.pi/logs/pi-web-ui.log ~/.pi/run/pi-web-ui.pid "${1:-start}" \
     pi-web-ui --no-browser --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "${@:2}" }
+
+# agent-manager（~/Documents/agent-manager）：端口写死在 server.js，不能改
+# 用法同 piweb：amgr / amgr open / stop / restart / status / logs
+# 注意：若按项目 README 装了 launchd 自启，就别再用本函数（会和 KeepAlive 抢端口）
+amgr() { local p=9876 d=${AGENT_MANAGER_DIR:-$HOME/Documents/agent-manager}
+  [[ -f $d/server.js ]] || { echo "找不到 $d/server.js" >&2; return 1; }
+  local l=~/.agent-manager/service.log f=~/.agent-manager/service.pid
+  if [[ $1 == open ]]; then
+    local url=$(_wsvc agent-manager "$p" "$l" "$f" start node "$d/server.js") || return
+    open "$url"; return
+  fi
+  _wsvc agent-manager "$p" "$l" "$f" "${1:-start}" node "$d/server.js" }
 
 # >>> ai-coding-trace qoder-token-usage >>>
 export QODER_EXPOSE_TOKEN_USAGE=1
