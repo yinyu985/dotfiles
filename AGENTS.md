@@ -26,14 +26,15 @@
 | `.zsh_plugins.txt` | antidote 插件清单 |
 | `.hammerspoon/` | Hammerspoon 配置（独立子目录，密钥由 `secrets.lua` 的 .gitignore 排除） |
 | `config/git/ignore` | git 全局忽略规则 |
+| `agents/AGENTS.md` | 跨工具通用规则，链接到 `~/.pi/agent/AGENTS.md` 和 `~/.codex/AGENTS.md` |
 
 **不入库**：`.gitconfig`（每台机器各自维护）、hammerspoon 的 `ocr/remote/secrets.lua`（密钥）、生成/缓存文件。
 
 ## 安装（新机器）
 
 ```bash
-git clone git@github.com:yinyu985/dotfiles.git ~/dotfiles
-cd ~/dotfiles
+git clone git@github.com:yinyu985/dotfiles.git ~/Documents/dotfiles
+cd ~/Documents/dotfiles
 ./install.sh
 ```
 
@@ -43,6 +44,6 @@ cd ~/dotfiles
 ## 更新
 
 ```bash
-cd ~/dotfiles
+cd ~/Documents/dotfiles
 git add -A && git commit -m "update" && git push
 ```
