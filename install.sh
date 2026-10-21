@@ -20,6 +20,11 @@ LINKS=(
   ".zsh_plugins.txt"         "$HOME/.zsh_plugins.txt"
   ".hammerspoon"             "$HOME/.hammerspoon"
   "config/git/ignore"        "$HOME/.config/git/ignore"
+  # 跨工具通用规则。目标可以是任意绝对路径，不限于 $HOME 顶层。
+  # pi: agent 目录的 AGENTS.md 是全局入口，与 cwd 无关。
+  # Codex: ~/.codex/AGENTS.md 是它的全局入口。
+  "agents/AGENTS.md"         "$HOME/.pi/agent/AGENTS.md"
+  "agents/AGENTS.md"         "$HOME/.codex/AGENTS.md"
 )
 
 link_file() {
