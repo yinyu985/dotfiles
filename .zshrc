@@ -344,12 +344,11 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 # fi
 
 # ---------------------------------------------------------------------------
-# 本地 web 服务统一管理（piweb = pi-web，pui = pi-web-ui，amgr = agent-manager）
+# 本地 web 服务统一管理（piweb = pi-web，amgr = agent-manager）
 #   <name>           确保在跑并给出地址（幂等，只输出 URL → open $(piweb)）
 #   <name> start     启动（可跟参数）
 #   <name> stop|restart|status|logs
-#   pui install      只有想开机自启才用：装 launchd 服务
-# 环境变量: PI_WEB_PORT(30141) / PI_UI_PORT(8787) / PI_UI_CWD($HOME)
+# 环境变量: PI_WEB_PORT(30141)
 # ---------------------------------------------------------------------------
 # 端口判活必须带 -sTCP:LISTEN，否则浏览器/客户端连上该端口的进程也会被匹配到
 _ws_pid() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null | head -1 }
@@ -389,12 +388,6 @@ _wsvc() {
 piweb() { local p=${PI_WEB_PORT:-30141}
   _wsvc pi-web "$p" ~/.pi/logs/pi-web.log ~/.pi/run/pi-web.pid "${1:-start}" \
     env "PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}" pi-web --no-open "${@:2}" }
-
-pui() { local p=${PI_UI_PORT:-8787}
-  if [[ $1 == install ]]; then shift
-    pi-web-ui server install --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "$@"; return; fi
-  _wsvc pi-web-ui "$p" ~/.pi/logs/pi-web-ui.log ~/.pi/run/pi-web-ui.pid "${1:-start}" \
-    pi-web-ui --no-browser --port "$p" --cwd "${PI_UI_CWD:-$HOME}" "${@:2}" }
 
 # agent-manager（~/Documents/agent-manager）：端口写死在 server.js，不能改
 # 用法同 piweb：amgr / amgr open / stop / restart / status / logs
