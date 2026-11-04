@@ -201,8 +201,8 @@ end
 function ocr.cancel()
   local job = activeJob
   if not job then return end
-  if job.task then job.task:terminate() end
   finish(job)
+  if job.task then job.task:terminate() end
   log:info("result=cancelled")
 end
 
@@ -234,12 +234,17 @@ local function runOCR(job)
     end
 
     local layoutOK, text, stats = pcall(layout.format, result.items)
-    if not layoutOK then
+    if not layoutOK or type(text) ~= "string" or type(stats) ~= "table" then
+      log:errorf("layout=%s", layoutOK and "invalid_return" or tostring(text))
       finish(job, nil, "OCR 排版失败", "layout_failed")
       return
     end
-    log:eventf("layou", "items=%d rows=%d columns=%d", stats.items, stats.rows, stats.columns)
-    local metadata = result.metadata or {}
+    local function count(value)
+      local n = tonumber(value)
+      return n and n == n and n >= 0 and n <= 1000000000 and math.floor(n) or 0
+    end
+    log:eventf("layou", "items=%d rows=%d columns=%d", count(stats.items), count(stats.rows), count(stats.columns))
+    local metadata = type(result.metadata) == "table" and result.metadata or {}
     log:eventf("vision", "ms=%.1f process_ms=%.1f revision=%s", tonumber(metadata.recognitionMS) or 0,
       now() - started, tostring(metadata.revision or "unknown"))
     finish(job, text)
@@ -252,8 +257,8 @@ local function runOCR(job)
   end
   job.timeout = timer.doAfter(OCR_TIMEOUT_SECONDS, function()
     if job.finished then return end
-    t:terminate()
     finish(job, nil, "OCR 超时", "timeout")
+    t:terminate()
   end)
 end
 

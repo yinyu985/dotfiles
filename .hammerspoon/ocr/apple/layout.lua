@@ -32,34 +32,147 @@ local function textMetrics(text)
     return #text, text:byte(1), text:byte(-1)
 end
 
+local function numericText(text)
+    return text:gsub("[ \t,]", ""):gsub("−", "-"):gsub("％", "%%")
+        :gsub("[%$]", ""):gsub("€", ""):gsub("¥", ""):gsub("£", "")
+end
+
+local function singleNumber(text)
+    local normalized = numericText(text):gsub("^%((.*)%)$", "-%1")
+    return normalized:match("^[+-]?%d+%.?%d*%%?$") or normalized:match("^[+-]?%.%d+%%?$")
+end
+
+-- Vision drops the space inside some small financial values, e.g. "1,0366.32%"
+-- for "1,036 6.32%" or "-422.73-10.83%" for two adjacent cells. A single
+-- number never contains a second sign, and a thousands group is exactly three
+-- digits, so both cases are provably two numbers rather than one.
+local function wellFormedNumber(text)
+    if type(text) ~= "string" then return false end
+    -- Keep the thousands separators: their grouping is the whole point here.
+    local value = text:gsub("[ \t\r\n]", ""):gsub("−", "-"):gsub("％", "%%")
+        :gsub("%$", ""):gsub("€", ""):gsub("¥", ""):gsub("£", "")
+    if value == "" then return false end
+    if value:match("^%([^%(%)]+%)$") then value = "-" .. value:sub(2, -2) end
+    local rest = value:match("^[-+]?(.*)$")
+    if rest:sub(-1) == "%" then rest = rest:sub(1, -2) end
+    local integer = rest:match("^(%d[%d,]*)$")
+    if not integer then
+        local whole, fraction = rest:match("^(%d[%d,]*)%.(%d+)$")
+        if not whole then
+            return fraction ~= nil and whole == nil and rest:match("^%.%d+$") ~= nil
+        end
+        integer = whole
+    end
+    if integer:find(",") then
+        -- Lua patterns cannot repeat a capture, so check the groups directly.
+        local head, rest = integer:match("^(%d%d?%d?)(,.+)$")
+        if not head then return false end
+        for group in rest:gmatch(",([^,]+)") do
+            if not group:match("^%d%d%d$") then return false end
+        end
+    end
+    return true
+end
+
+local function splitNumberPair(text)
+    if type(text) ~= "string" or not text:find("%%") then return nil end
+    -- Only joined values need repair; a space already separates them.
+    if text:find("[ \t]") then return nil end
+    if wellFormedNumber(text) then return nil end
+    for index = 2, #text - 1 do
+        local left, right = text:sub(1, index - 1), text:sub(index)
+        if wellFormedNumber(left) and wellFormedNumber(right) then
+            return left, right
+        end
+    end
+    return nil
+end
+
+-- Boundary between the two numbers, taken from Vision's character boxes. The
+-- boxes are word-level for fonts this small, so this is only used to place the
+-- split; the text itself never depends on the box.
+local function characterBoundary(item, index)
+    local characters = item.characters
+    if type(characters) ~= "table" or #characters < index then return nil end
+    local pieces, visible = {}, 0
+    for _, character in ipairs(characters) do
+        if type(character) ~= "table" or type(character.text) ~= "string" then return nil end
+        pieces[#pieces + 1] = character.text
+        if character.text ~= "" and not character.text:match("^[ \t\r\n]*$") then visible = visible + 1 end
+    end
+    if table.concat(pieces) ~= item.text or visible ~= #item.text then return nil end
+    local boundary = finiteNumber(characters[index].x)
+    if not boundary or characters[index].text:match("^[ \t\r\n]*$") then return nil end
+    boundary = math.min(math.max(boundary, item.x), item.right)
+    if boundary <= item.x or boundary >= item.right then return nil end
+    return boundary
+end
+
 local function normalizedItems(items)
     local result = {}
-    for _, value in ipairs(type(items) == "table" and items or {}) do
-        local raw = type(value) == "table" and value or {}
+    local keys = {}
+    for key in pairs(type(items) == "table" and items or {}) do
+        if type(key) == "number" and key >= 1 and key % 1 == 0 then keys[#keys + 1] = key end
+    end
+    table.sort(keys)
+    local function append(raw, key, text, x, y, width, height)
+        local length, first, last = textMetrics(text)
+        result[#result + 1] = {
+            sourceIndex = key,
+            text = text,
+            confidence = finiteNumber(raw.confidence) or 0,
+            charWidth = width / math.max(length, 1),
+            firstCodepoint = first,
+            lastCodepoint = last,
+            characters = type(raw.characters) == "table" and raw.characters or nil,
+            x = x,
+            y = y,
+            width = width,
+            height = height,
+            right = x + width,
+            top = y + height,
+            centerX = x + width / 2,
+            centerY = y + height / 2,
+        }
+    end
+    for _, key in ipairs(keys) do
+        local raw = type(items[key]) == "table" and items[key] or {}
         local text = type(raw.text) == "string" and raw.text:gsub("^%s+", ""):gsub("%s+$", "") or ""
         local x, y = finiteNumber(raw.x), finiteNumber(raw.y)
         local width, height = finiteNumber(raw.width), finiteNumber(raw.height)
         if text ~= "" and x and y and width and height and width >= 0 and height > 0 then
-            local length, first, last = textMetrics(text)
-            result[#result + 1] = {
-                text = text,
-                confidence = finiteNumber(raw.confidence) or 0,
-                charWidth = width / math.max(length, 1),
-                firstCodepoint = first,
-                lastCodepoint = last,
-                characters = type(raw.characters) == "table" and raw.characters or nil,
-                x = x,
-                y = y,
-                width = width,
-                height = height,
-                right = x + width,
-                top = y + height,
-                centerX = x + width / 2,
-                centerY = y + height / 2,
-            }
+            local left, right = splitNumberPair(text)
+            local boundary = left and characterBoundary({ text = text, x = x, right = x + width,
+                characters = raw.characters }, #left)
+            if left and boundary then
+                -- Two values that Vision merged without a separator become two
+                -- observations, so the table keeps its columns.
+                append(raw, key, left, x, y, boundary - x, height)
+                append(raw, key, right, boundary, y, x + width - boundary, height)
+            elseif left then
+                -- No reliable split point (the source has no visible gap):
+                -- keep one cell and restore the missing space between values.
+                append(raw, key, left .. " " .. right, x, y, width, height)
+            else
+                append(raw, key, text, x, y, width, height)
+            end
         end
     end
     return result
+end
+
+-- Vision coordinates have their origin at bottom-left; larger Y reads first.
+local function tieLess(a, b)
+    if a.text ~= b.text then return a.text < b.text end
+    if a.width ~= b.width then return a.width < b.width end
+    if a.height ~= b.height then return a.height < b.height end
+    return a.sourceIndex < b.sourceIndex
+end
+
+local function horizontalLess(a, b)
+    if a.x ~= b.x then return a.x < b.x end
+    if a.centerY ~= b.centerY then return a.centerY > b.centerY end
+    return tieLess(a, b)
 end
 
 local function makeRows(items)
@@ -73,7 +186,7 @@ local function makeRows(items)
     table.sort(items, function(a, b)
         if a.centerY ~= b.centerY then return a.centerY > b.centerY end
         if a.x ~= b.x then return a.x < b.x end
-        return a.text < b.text
+        return tieLess(a, b)
     end)
 
     local rows, activeRows = {}, {}
@@ -126,12 +239,15 @@ local function makeRows(items)
         end
     end
 
-    table.sort(rows, function(a, b) return a.centerY > b.centerY end)
+    table.sort(rows, function(a, b)
+        if a.centerY ~= b.centerY then return a.centerY > b.centerY end
+        return horizontalLess(a.items[1], b.items[1])
+    end)
     for _, row in ipairs(rows) do
         table.sort(row.items, function(a, b)
             if a.x ~= b.x then return a.x < b.x end
             if a.centerY ~= b.centerY then return a.centerY > b.centerY end
-            return a.text < b.text
+            return tieLess(a, b)
         end)
     end
     return rows, medianHeight
@@ -196,16 +312,6 @@ local function adjacentSeparator(left, right)
     return " "
 end
 
-local function numericText(text)
-    return text:gsub("[%s,]", ""):gsub("−", "-"):gsub("％", "%%")
-        :gsub("[%$]", ""):gsub("€", ""):gsub("¥", ""):gsub("£", "")
-end
-
-local function singleNumber(text)
-    local normalized = numericText(text):gsub("^%((.*)%)$", "-%1")
-    return normalized:match("^[+-]?%d+%.?%d*%%?$") or normalized:match("^[+-]?%.%d+%%?$")
-end
-
 local function characterUnits(item, mode)
     local tokens, word, wordCount = {}, nil, 0
     for _, character in ipairs(item.characters) do
@@ -231,19 +337,16 @@ local function characterUnits(item, mode)
     -- of a differently aligned header. Keep unspaced header words intact.
     if wordCount > 1 then return tokens end
     if mode == "header" then return nil end
-    -- A grid boundary alone must never cut a URL, identifier, date, word, or
-    -- one long number. Only an otherwise numeric multi-value string with an
-    -- explicit percentage marker is eligible for character-level recovery.
-    local numeric = numericText(item.text)
-    if not numeric:find("%%") or numeric:find("[^%d%.%+%-%%%(%)]") or singleNumber(numeric) then return nil end
-    return item.characters, true
+    -- Accurate Vision exposes word boxes, not reliable individual glyph boxes.
+    -- Without explicit whitespace there is no safe internal split point.
+    return nil
 end
 
 local function splitAcrossColumns(item, boundaries, mode)
     if not item.characters or columnFor({ centerX = item.x }, boundaries)
         == columnFor({ centerX = item.right }, boundaries) then return { item } end
 
-    local units, numericSplit = characterUnits(item, mode)
+    local units = characterUnits(item, mode)
     if not units then return { item } end
     local groups, current, whitespace, original = {}, nil, "", {}
     for _, character in ipairs(units) do
@@ -276,13 +379,17 @@ local function splitAcrossColumns(item, boundaries, mode)
     local reconstructed = table.concat(original):gsub("^%s+", ""):gsub("%s+$", "")
     if reconstructed ~= item.text or #groups <= 1 then return { item } end
     local originalColumn = columnFor(item, boundaries)
+    local leadingLabel = groups[1].column == 1
+    for index = 2, #groups do
+        if not singleNumber(groups[index].text) then leadingLabel = false end
+    end
     for _, group in ipairs(groups) do
-        if numericSplit and not singleNumber(group.text) then return { item } end
         -- A natural-language sentence can legitimately extend across a learned
-        -- boundary into an empty neighboring cell. Move body tokens only when
-        -- newly populated cells contain complete numbers, not arbitrary words.
-        if mode == "body" and not numericSplit and group.column ~= originalColumn
-            and not singleNumber(group.text) then return { item } end
+        -- boundary into an empty neighboring cell. Accept only complete numbers
+        -- or a leading first-column label followed entirely by complete numbers.
+        if mode == "body" and group.column ~= originalColumn
+            and not singleNumber(group.text)
+            and not (leadingLabel and group == groups[1]) then return { item } end
         group.width, group.height = group.right - group.x, group.top - group.y
     end
     return normalizedItems(groups)
@@ -293,7 +400,7 @@ local function cellText(items)
     if #items == 1 then return items[1].text end
     table.sort(items, function(a, b)
         if a.centerY ~= b.centerY then return a.centerY > b.centerY end
-        return a.x < b.x
+        return horizontalLess(a, b)
     end)
     local lines, line = {}, nil
     for _, item in ipairs(items) do
@@ -306,7 +413,7 @@ local function cellText(items)
     local parts, previous
     parts = {}
     for _, textLine in ipairs(lines) do
-        table.sort(textLine.items, function(a, b) return a.x < b.x end)
+        table.sort(textLine.items, horizontalLess)
         for index, item in ipairs(textLine.items) do
             if previous then
                 parts[#parts + 1] = index == 1 and
@@ -419,6 +526,8 @@ local function findTable(rows, medianHeight)
             local numeric = rowHasNumber(previous)
             local minimumOccupied = numeric and math.max(2, math.ceil(best.columnCount * 0.6)) or 2
             if occupied < minimumOccupied or collisions > math.max(2, math.floor(#previous.items * 0.5)) then break end
+            -- Sparse toolbars/titles must not bridge the gap to a wide table.
+            if #previous.items < math.ceil(best.columnCount * 0.4) then break end
             best.first = best.first - 1
             if numeric then best.bodyFirst = best.first end
         end
@@ -481,50 +590,125 @@ local function hasLetters(item)
     return item.text:find("[\128-\255]") ~= nil
 end
 
-local function findSummaries(rows, medianHeight, tableRegion)
+local function findTables(rows, medianHeight, excluded)
+    local regions = {}
+    local function visit(first, last)
+        local subset = {}
+        for i = first, last do subset[#subset + 1] = rows[i] end
+        local region = findTable(subset, medianHeight)
+        if not region then return end
+        region.first = region.first + first - 1
+        region.last = region.last + first - 1
+        region.bodyFirst = region.bodyFirst + first - 1
+        visit(first, region.first - 1)
+        regions[#regions + 1] = region
+        visit(region.last + 1, last)
+    end
+    local first = 1
+    for index = 1, #rows + 1 do
+        if index > #rows or excluded[index] then
+            if first < index then visit(first, index - 1) end
+            first = index + 1
+        end
+    end
+    return regions
+end
+
+local function summaryNumber(text)
+    return singleNumber(text) or singleNumber(text:gsub("[KMBkmb]$", ""))
+end
+
+local function findSummaries(rows, medianHeight, tableRegions)
     local summaries, covered, maximumColumns = {}, {}, 0
     local function inTable(index)
-        return tableRegion and index >= tableRegion.first and index <= tableRegion.last
+        for _, region in ipairs(tableRegions) do
+            if index >= region.first and index <= region.last then return true end
+        end
+        return false
     end
     for valueIndex, values in ipairs(rows) do
-        local numeric = #values.items >= 3 and not inTable(valueIndex)
+        local numeric = #values.items >= 2 and not inTable(valueIndex)
         for _, item in ipairs(values.items) do
-            if not item.text:find("%d") or hasLetters(item) then numeric = false end
+            if not summaryNumber(item.text) then numeric = false end
+        end
+        -- Repeated all-numeric rows are a table, not a label/value summary.
+        local nextRow = rows[valueIndex + 1]
+        if numeric and nextRow and #nextRow.items >= 2 then
+            local nextNumeric = true
+            for _, item in ipairs(nextRow.items) do
+                if not summaryNumber(item.text) then nextNumeric = false end
+            end
+            if nextNumeric then numeric = false end
         end
         if numeric then
             local labels, previousY = {}, values.centerY
             for labelIndex = valueIndex - 1, math.max(1, valueIndex - 2), -1 do
                 local labelRow, textOnly = rows[labelIndex], true
                 if inTable(labelIndex) or previousY - labelRow.centerY > 0
-                    or labelRow.centerY - previousY > medianHeight * 1.8 then break end
+                    or labelRow.centerY - previousY > math.max(medianHeight, values.height) * 1.8 then break end
                 for _, label in ipairs(labelRow.items) do
                     if label.text:find("%d") or not hasLetters(label) then textOnly = false end
                 end
                 if not textOnly then break end
                 for _, label in ipairs(labelRow.items) do labels[#labels + 1] = label end
                 previousY = labelRow.centerY
-                if #labels >= #values.items and #values.items >= #labels * 0.75 then
-                    table.sort(labels, function(a, b) return a.x < b.x end)
+                table.sort(labels, horizontalLess)
+                local grouped = {}
+                for _, label in ipairs(labels) do
+                    local previous = grouped[#grouped]
+                    local parenthetical = label.text:match("^%(.+%)$") or label.text:match("^（.+）$")
+                    local independentValue = false
+                    if parenthetical then
+                        for _, value in ipairs(values.items) do
+                            if math.abs(value.x - label.x) <= math.min(value.height, label.height) * 0.4 then
+                                independentValue = true
+                            end
+                        end
+                    end
+                    if previous and parenthetical and not independentValue
+                        and math.abs(previous.centerY - label.centerY) < math.min(previous.height, label.height) * 0.4
+                        and label.x - previous.right >= 0
+                        and label.x - previous.right < math.min(previous.height, label.height) * 0.4 then
+                        -- Copy: summary discovery must not mutate observations or table candidates.
+                        local joined = {}
+                        for key, value in pairs(previous) do joined[key] = value end
+                        joined.text, joined.right = previous.text .. " " .. label.text, label.right
+                        grouped[#grouped] = joined
+                    else
+                        grouped[#grouped + 1] = label
+                    end
+                end
+                labels = grouped
+                if #labels >= 2 then
                     local cells, valid = {}, true
                     for index, label in ipairs(labels) do
                         cells[index] = ""
                         if labels[index + 1] and label.right > labels[index + 1].x then valid = false end
                     end
+                    local matchedCount = 0
                     for _, value in ipairs(values.items) do
                         local matched
                         for index, label in ipairs(labels) do
                             local tolerance = math.max(math.min(value.height, label.height) * 0.4, 0.002)
-                            if math.abs(value.x - label.x) <= tolerance then
-                                if matched or cells[index] ~= ""
+                            local anchored = math.abs(value.x - label.x) <= tolerance
+                            local continuation = cells[index] ~= "" and value.x >= label.x
+                                and value.right <= (labels[index + 1] and labels[index + 1].x or 1)
+                            if anchored or continuation then
+                                if matched
                                     or (labels[index + 1] and value.right > labels[index + 1].x) then
                                     valid = false
                                 end
                                 matched = index
                             end
                         end
-                        if not matched then valid = false else cells[matched] = value.text end
+                        if not matched then
+                            valid = false
+                        else
+                            if cells[matched] == "" then matchedCount = matchedCount + 1 end
+                            cells[matched] = cells[matched] == "" and value.text or cells[matched] .. " " .. value.text
+                        end
                     end
-                    if valid then
+                    if valid and matchedCount >= 2 then
                         local headings = {}
                         for index, label in ipairs(labels) do headings[index] = label.text end
                         summaries[labelIndex] = { headings = headings, cells = cells }
@@ -539,15 +723,48 @@ local function findSummaries(rows, medianHeight, tableRegion)
     return summaries, covered, maximumColumns
 end
 
+-- A UI icon read as a couple of glyphs is noise, not content: low confidence,
+-- tiny, letter-free, and made of symbols. Real short captions ("OK", "12") are
+-- kept because they have no decorative glyph and no such low confidence.
+local noiseGlyphs = "[•·・®©◎⁃∙※★☆！!%?？%*%+]+"
+local function isNoise(item)
+    if item.confidence >= 0.35 then return false end
+    local length = utf8 and utf8.len(item.text) or #item.text
+    if not length or length < 1 or length > 3 then return false end
+    if item.text:find("%d") then return false end
+    if utf8 and utf8.codes then
+        local ok, cjk = pcall(function()
+            for _, codepoint in utf8.codes(item.text) do
+                if isCJK(codepoint) then return true end
+            end
+            return false
+        end)
+        if ok and cjk then return false end
+    end
+    return item.text:find(noiseGlyphs) ~= nil
+end
+
 function M.format(items)
     local normalized = normalizedItems(items)
     if #normalized == 0 then return "", { items = 0, rows = 0, columns = 0 } end
 
+    local kept = {}
+    for _, item in ipairs(normalized) do
+        if not isNoise(item) then kept[#kept + 1] = item end
+    end
+    normalized = kept
+
     local rows, medianHeight = makeRows(normalized)
-    local tableRegion = findTable(rows, medianHeight)
-    local summaries, summaryRows, summaryColumns = findSummaries(rows, medianHeight, tableRegion)
+    local summaries, summaryRows, summaryColumns = findSummaries(rows, medianHeight, {})
+    local tableRegions = findTables(rows, medianHeight, summaryRows)
+    local maximumColumns = summaryColumns
+    for _, region in ipairs(tableRegions) do maximumColumns = math.max(maximumColumns, region.columnCount) end
     local lines = {}
     for rowIndex, row in ipairs(rows) do
+        local tableRegion
+        for _, region in ipairs(tableRegions) do
+            if rowIndex >= region.first and rowIndex <= region.last then tableRegion = region; break end
+        end
         local summary = summaries[rowIndex]
         if summary then
             lines[#lines + 1] = table.concat(summary.headings, "\t")
@@ -576,7 +793,8 @@ function M.format(items)
     return table.concat(lines, "\n"), {
         items = #normalized,
         rows = #lines,
-        columns = tableRegion and tableRegion.columnCount or summaryColumns,
+        columns = maximumColumns,
+        regions = #tableRegions,
     }
 end
 
