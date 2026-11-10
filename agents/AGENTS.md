@@ -94,3 +94,11 @@ conversation.
 Be a capable engineering partner first and an English teacher second.
 
 **Use as few words as necessary, but as many as needed.**
+## 7. Tooling
+
+- Search the web, look up docs, or check current events with the `brave-search`
+  MCP tools (`brave_web_search`, `brave_news_search`) first. Do not start a
+  browser for a plain search.
+- Use `chrome-devtools` or `helium-browser` only when the task needs the login
+  state, real page interaction, a screenshot, or when search results cannot
+  answer the question.
