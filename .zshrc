@@ -348,17 +348,23 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 #   <name>           确保在跑并给出地址（幂等，只输出 URL → open $(piweb)）
 #   <name> start     启动（可跟参数）
 #   <name> stop|restart|status|logs
-# 环境变量: PI_WEB_PORT(30141)
+# 环境变量: PI_WEB_PORT(30141)、PI_WEB_HOSTNAME(默认 0.0.0.0 即局域网可访问)、PI_WEB_PASSWORD
 # ---------------------------------------------------------------------------
 # 端口判活必须带 -sTCP:LISTEN，否则浏览器/客户端连上该端口的进程也会被匹配到
 _ws_pid() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null | head -1 }
+_ws_lan() { ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null }
 
 # _wsvc <名字> <端口> <日志> <pid文件> [start|stop|restart|status|logs] <启动命令...>
 _wsvc() {
   local n=$1 p=$2 l=$3 f=$4; shift 4
   local pid=$(_ws_pid $p)
   case ${1:-start} in
-    status)  if [[ -n $pid ]]; then echo "$n 运行中 (pid $pid, http://127.0.0.1:$p)"
+    status)  if [[ -n $pid ]]; then
+               echo "$n 运行中 (pid $pid, http://127.0.0.1:$p)"
+               local lan=$(_ws_lan)
+               if [[ -n $lan ]] && lsof -nP -iTCP:$p -sTCP:LISTEN 2>/dev/null | grep -qF "*:$p"; then
+                 echo "  局域网: http://$lan:$p"
+               fi
              else echo "$n 未运行"; fi ;;
     logs)    tail -n 50 "$l" ;;
     stop)    if [[ -n $pid ]]; then
@@ -385,9 +391,13 @@ _wsvc() {
 }
 
 # 日志/PID 一律放 ~/.pi（logs/ + run/），不往家目录拉屎
+# 默认绑 0.0.0.0（局域网可访问）；要只给本机用: PI_WEB_HOSTNAME=127.0.0.1 piweb restart
+# 暴露到局域网时建议加密码: PI_WEB_PASSWORD='长随机串' piweb restart
 piweb() { local p=${PI_WEB_PORT:-30141}
   _wsvc pi-web "$p" ~/.pi/logs/pi-web.log ~/.pi/run/pi-web.pid "${1:-start}" \
-    env "PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}" pi-web --no-open "${@:2}" }
+    env "PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}" \
+        "PI_WEB_HOSTNAME=${PI_WEB_HOSTNAME:-0.0.0.0}" \
+        pi-web --no-open "${@:2}" }
 
 # agent-manager（~/Documents/agent-manager）：端口写死在 server.js，不能改
 # 用法同 piweb：amgr / amgr open / stop / restart / status / logs
