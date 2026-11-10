@@ -45,7 +45,6 @@ local VERIFY_WAIT = 0.12    -- hide/activate 后回读校验的延迟
 local hotkeys = {}
 local registered = {}       -- combo -> bundleID，防重复注册
 local pending = {}          -- combo -> 最近一次按键时间，防连击
-local cameFrom = nil        -- 呼出前的前台 bundleID，隐藏时把焦点还回去
 
 -- ---------------------------------------------------------------- 配置
 
@@ -120,25 +119,10 @@ local function bringToFront(bundleID)
     return activate(bundleID, "focus")
 end
 
--- 隐藏后把焦点还给“按热键之前你在用的那个 App”。
--- 不还的话 macOS 会随便挑下一个 App，若它在别的桌面就会把整个屏幕切过去。
-local function restoreFocus()
-    local bid = cameFrom
-    if not bid then return end
-    cameFrom = nil
-    activate(bid, "restore")
-end
-
 local function revealApp(a)
     local bid = a:bundleID()
     local hadHidden = isHiddenNow(a)
     local hadMin = unminimize(a)
-
-    -- 记录呼出前的前台 App（即用户当前桌面上正在用的那个）
-    local prev = app.frontmostApplication()
-    if prev and prev:bundleID() and prev:bundleID() ~= bid then
-        cameFrom = prev:bundleID()
-    end
 
     if hadHidden then a:unhide() end
     bringToFront(bid)
@@ -158,10 +142,7 @@ end
 local function concealApp(a)
     local bid = a:bundleID()
 
-    -- 顺序很重要：先把焦点还给来源 App，再隐藏。
-    -- 反过来的话 hide 会触发焦点交接，macOS 可能挑中别的桌面上的 App，
-    -- 整个屏幕就被切过去了（用户看到的就是“切桌面”）。
-    restoreFocus()
+    -- 只隐藏目标应用，不启动或激活其他应用。焦点交接交给 macOS。
 
     a:hide()  -- 返回值恒为 false，不采信，靠回读判断
     timer.doAfter(VERIFY_WAIT, function()

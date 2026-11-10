@@ -5,7 +5,7 @@ end
 require("ocr.apple")
 require("ocr.remote")
 require("process_monitor")
-require("modules.app_toggle").start()
+require("app_toggle").start()
 
 if hs.host.localizedName() == "yy的Mac mini" then
     require("volume")
