@@ -348,7 +348,9 @@ alias ggcm='python3 /usr/local/bin/ggcm'
 #   <name>           确保在跑并给出地址（幂等，只输出 URL → open $(piweb)）
 #   <name> start     启动（可跟参数）
 #   <name> stop|restart|status|logs
-# 环境变量: PI_WEB_PORT(30141)、PI_WEB_HOSTNAME(默认 0.0.0.0 即局域网可访问)、PI_WEB_PASSWORD
+# 环境变量: PI_WEB_PORT(30141)、PI_WEB_HOSTNAME(默认 0.0.0.0 局域网可访问)、
+#           PI_WEB_PASSWORD(密码存在 ~/.pi/pi-web.password，不入 git)
+# 局域网访问 http://<本机 IP>:30141 ，会要求密码登录。(明文 HTTP，仅限可信局域网)
 # ---------------------------------------------------------------------------
 # 端口判活必须带 -sTCP:LISTEN，否则浏览器/客户端连上该端口的进程也会被匹配到
 _ws_pid() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null | head -1 }
@@ -391,12 +393,15 @@ _wsvc() {
 }
 
 # 日志/PID 一律放 ~/.pi（logs/ + run/），不往家目录拉屎
-# 默认绑 0.0.0.0（局域网可访问）；要只给本机用: PI_WEB_HOSTNAME=127.0.0.1 piweb restart
-# 暴露到局域网时建议加密码: PI_WEB_PASSWORD='长随机串' piweb restart
+# 默认绑 0.0.0.0（局域网可访问），密码从 ~/.pi/pi-web.password 读，必须有。
+# 只给本机用: PI_WEB_HOSTNAME=127.0.0.1 piweb restart
 piweb() { local p=${PI_WEB_PORT:-30141}
+  local pw=${PI_WEB_PASSWORD:-$(cat ~/.pi/pi-web.password 2>/dev/null)}
+  [[ -n $pw ]] || { echo "缺少密码：~/.pi/pi-web.password" >&2; return 1; }
   _wsvc pi-web "$p" ~/.pi/logs/pi-web.log ~/.pi/run/pi-web.pid "${1:-start}" \
     env "PI_WEB_IDLE_TIMEOUT_MS=${PI_WEB_IDLE_TIMEOUT_MS:-0}" \
         "PI_WEB_HOSTNAME=${PI_WEB_HOSTNAME:-0.0.0.0}" \
+        "PI_WEB_PASSWORD=$pw" \
         pi-web --no-open "${@:2}" }
 
 # agent-manager（~/Documents/agent-manager）：端口写死在 server.js，不能改
